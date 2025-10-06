@@ -1,0 +1,14 @@
+{
+    // Enable formatting on save for all languages
+    "editor.formatOnSave": true,
+
+    // Set Black as the default Python formatter
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    },
+
+    // Enable flake8 linting
+    "python.linting.flake8Enabled": true,
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": false
+}

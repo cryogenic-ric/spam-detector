@@ -1,0 +1,6 @@
+pandas
+transformers
+torch
+scikit-learn
+beautifulsoup4
+sentencepiece
