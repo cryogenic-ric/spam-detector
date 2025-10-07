@@ -1,15 +1,19 @@
 import torch
 import pandas as pd
 from bs4 import BeautifulSoup
+from bs4 import MarkupResemblesLocatorWarning
+import warnings
 import re
 from typing import Any
+
+warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
 
 # Define weighted keywords. Higher weight means a stronger spam indicator.
 KEYWORD_RULES = {
     "coinbase": 0.9,
-    "support number": 0.3,
-    "contact support": 0.3,
-    "tollfree": 0.2,
+    "support number": 0.5,
+    "contact support": 0.5,
+    "tollfree": 0.3,
     "dial": 0.15,
     "technical support": 0.2,
     "phone number": 0.25,

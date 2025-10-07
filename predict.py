@@ -132,8 +132,7 @@ class HybridSpamDetector:
     def predict_batch(self, texts: List[str]) -> List[Tuple[int, float]]:
         """
         Analyzes a batch of texts for spam using a hybrid model-rule approach.
-        Only texts containing phone numbers or specified keywords can be
-        classified as spam.
+        Only texts containing required patterns are sent to the LLM for analysis.
 
         Returns:
             A list of tuples, where each tuple contains (is_spam_flag, confidence_score).
@@ -141,18 +140,21 @@ class HybridSpamDetector:
         if not texts:
             return []
 
-        model_probs = [0.0] * len(texts)
+        # --- Step 1: Pre-filter texts to find those that need LLM analysis ---
+        texts_for_llm = []
+        indices_for_llm = []
+        for i, text in enumerate(texts):
+            if self._has_required_patterns(text):
+                texts_for_llm.append(text)
+                indices_for_llm.append(i)
 
-        # --- Step 1: Get predictions from the model (if available) ---
-        if self.detector:
+        # --- Step 2: Get predictions from the model ONLY for the filtered texts ---
+        model_probs = {}  # Use a dict to map original index to probability
+        if self.detector and texts_for_llm:
             try:
-                # Process the entire batch at once for performance
-                # For MPS, we might need smaller batches
-                # depending on available memory
                 batch_size = 32 if self.device == "mps" else 64
-
                 results = self.detector(
-                    texts,
+                    texts_for_llm,  # <-- Pass only the filtered list to the model
                     truncation=True,
                     padding=True,
                     max_length=512,
@@ -160,70 +162,38 @@ class HybridSpamDetector:
                 )
 
                 for i, result in enumerate(results):
-                    # Handle different label formats
                     label = result["label"].upper()
                     score = result["score"]
+                    original_index = indices_for_llm[i]  # Map result back to original index
 
                     if label in ["SPAM", "LABEL_1", "1"]:
-                        model_probs[i] = score
-                    else:  # HAM, LABEL_0, 0, etc.
-                        model_probs[i] = 1.0 - score
-
-            except RuntimeError as e:
-                if "out of memory" in str(e).lower() and self.device != "cpu":
-                    print(
-                        f"⚠️ GPU memory error, falling back to CPU for this batch: {e}"
-                    )
-                    # Retry on CPU
-                    try:
-                        cpu_detector = pipeline(
-                            "text-classification",
-                            model=self.model_name,
-                            device=-1,
-                        )
-                        results = cpu_detector(
-                            texts,
-                            truncation=True,
-                            padding=True,
-                            max_length=512,
-                        )
-                        for i, result in enumerate(results):
-                            label = result["label"].upper()
-                            score = result["score"]
-                            if label in ["SPAM", "LABEL_1", "1"]:
-                                model_probs[i] = score
-                            else:
-                                model_probs[i] = 1.0 - score
-                    except Exception as e2:
-                        print(f"⚠️ CPU fallback also failed: {e2}")
-                else:
-                    print(
-                        f"⚠️ Error during model prediction batch: {e}. Falling back to rules for this batch."
-                    )
+                        model_probs[original_index] = score
+                    else:
+                        model_probs[original_index] = 1.0 - score
 
             except Exception as e:
                 print(
                     f"⚠️ Error during model prediction batch: {e}. Falling back to rules for this batch."
                 )
+                # If the model fails, model_probs will be empty, and the logic below will rely solely on rules.
 
-        # --- Step 2: Combine model scores with rule-based scores ---
+        # --- Step 3: Calculate final scores for the entire original batch ---
         final_results = []
         for i, text in enumerate(texts):
-            rule_score = self._apply_rules(text)
-            model_prob = model_probs[i]
+            # Check if the current text was one of the ones that had patterns
+            if i in indices_for_llm:
+                rule_score = self._apply_rules(text)
+                # Get model probability; default to 0.0 if LLM failed or had an issue
+                model_prob = model_probs.get(i, 0.0)
 
-            # Check if text contains required patterns (phone numbers OR keywords)
-            has_required_patterns = self._has_required_patterns(text)
-
-            if has_required_patterns:
-                # Hybrid Score Calculation - only if text has required patterns
+                # Hybrid Score Calculation
                 combined_score = model_prob + (1.0 - model_prob) * rule_score
                 combined_score = min(combined_score, 1.0)
 
                 is_spam = 1 if combined_score >= SPAM_THRESHOLD else 0
                 confidence = combined_score
             else:
-                # No phone numbers or keywords found - cannot be spam
+                # If no required patterns were found, it cannot be spam.
                 is_spam = 0
                 confidence = 0.0
 
@@ -287,7 +257,7 @@ def main():
     texts_to_analyze = df["combined_text"].tolist()
 
     # Process in smaller batches for better memory management on MPS
-    batch_size = 8  # 128
+    batch_size = 32
     all_results = []
 
     for i in range(0, len(texts_to_analyze), batch_size):
